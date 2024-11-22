@@ -45,7 +45,7 @@ __device__ __forceinline__ int blockReduceMin(int val) {
     return val;
 }
 
-__global__ void findMinKernel(const int* __restrict__ input, 
+__device__ __forceinline__ int find_min_kernel(const int* __restrict__ input, 
                             int* __restrict__ output,
                             const size_t N) {
     // Grid-stride loop for handling large arrays
@@ -62,7 +62,15 @@ __global__ void findMinKernel(const int* __restrict__ input,
     
     // Reduce within block
     int blockMin = blockReduceMin(localMin);
-    
+
+    return blockMin;
+}
+
+__global__ void find_min_optimized_kernel(const int* __restrict__ input, 
+                            int* __restrict__ output,
+                            const size_t N) {
+    int blockMin = find_min_kernel(input, output, N);
+
     // Write result for this block to global memory
     if (threadIdx.x == 0) {
         atomicMin(output, blockMin);
@@ -85,7 +93,54 @@ void find_min_optimized_wrapper(const int* input, int* output, size_t N) {
     else                                               numBlocks = (N + blockSize - 1) / blockSize;
     
     // Launch kernel
-    findMinKernel<<<numBlocks, blockSize>>>(input, output, N);
+    find_min_optimized_kernel<<<numBlocks, blockSize>>>(input, output, N);
+}
+
+__global__ void find_min_fixpoint_optimized_kernel(const int* __restrict__ input, 
+                            int* __restrict__ output,
+                            const size_t N) {
+    int blockMin = find_min_kernel(input, output, N);
+
+    // Write result for this block to global memory
+    if (threadIdx.x == 0 && blockMin < *output) {
+        *output = blockMin;
+    }
+}
+
+void find_min_fixpoint_optimized_wrapper(const int* input, int* output, size_t N) {
+    // Set initial output value
+    cudaError_t err;
+    int initVal = INT_MAX;
+    err = cudaMemcpy(output, &initVal, sizeof(int), cudaMemcpyHostToDevice); cuda_err_check(err, __FILE__, __LINE__);
+    
+    // Calculate grid dimensions
+    size_t blockSize = 256;  // Use multiple of 32 for efficient warp operations
+    int numSMs;
+    err = cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0); cuda_err_check(err, __FILE__, __LINE__);
+    size_t numBlocks;
+
+    if (32 * numSMs < (N + blockSize - 1) / blockSize) numBlocks = 32 * numSMs;
+    else                                               numBlocks = (N + blockSize - 1) / blockSize;
+    
+
+    int h_min_prev, h_min;
+
+    err = cudaMemcpy(&h_min, output, sizeof(int), cudaMemcpyDeviceToHost); cuda_err_check(err, __FILE__, __LINE__);
+
+    int cnt = 0;
+
+    do
+    {
+        h_min_prev = h_min;
+        find_min_fixpoint_optimized_kernel<<<numBlocks, blockSize>>>(input, output, N);
+        err = cudaDeviceSynchronize();
+        cuda_err_check(err, __FILE__, __LINE__);
+        err = cudaGetLastError();
+        cuda_err_check(err, __FILE__, __LINE__);
+        err = cudaMemcpy(&h_min, output, sizeof(int), cudaMemcpyDeviceToHost);
+        cuda_err_check(err, __FILE__, __LINE__);
+        cnt++;
+    } while (h_min != h_min_prev);
 }
 
 __global__ void find_min_atomicMin_kernel(const int *d_array, int *d_min, size_t size)
@@ -139,30 +194,6 @@ void find_min_fixpoint_wrapper(const int *d_array, int *d_min, size_t size)
     } while (h_min != h_min_prev);
 
     // printf("Iterations: %d\n", cnt);
-}
-__global__ void find_min_strided_kernel(const int *d_array, int *d_min, size_t size)
-{
-    size_t i = threadIdx.x + blockIdx.x * blockDim.x;
-    size_t stride = blockDim.x * gridDim.x;
-
-    int localMin = INT_MAX;
-
-    for (size_t idx = i; idx < size; idx += stride)
-    {
-        localMin = min(localMin, d_array[idx]);
-    }
-
-    atomicMin(d_min, localMin);
-}
-
-void find_min_strided_wrapper(const int *d_array, int *d_min, size_t size)
-{
-    int blockSize = 1024;
-    int numSMs;
-    cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
-    int gridSize = 32 * numSMs;
-
-    find_min_strided_kernel<<<gridSize, blockSize>>>(d_array, d_min, size);
 }
 
 int find_min_gpu(int *d_array, size_t size, void (*findMinWrapper)(const int *, int *, size_t))

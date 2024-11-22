@@ -23,7 +23,8 @@ int main(int argc, char *argv[]) {
     vector<functions_to_test> functions = {
         {find_min_atomicMin_wrapper, "find_min_atomicMin", 0},
         {find_min_fixpoint_wrapper, "find_min_fixpoint", 0},
-        {find_min_optimized_wrapper, "find_min_optimized", 0}
+        {find_min_optimized_wrapper, "find_min_optimized", 0},
+        {find_min_fixpoint_optimized_wrapper, "find_min_fixpoint_optimized", 0}
     };
 
     int seed = 42;
